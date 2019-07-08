@@ -52,7 +52,7 @@
 /* 1 */
 /***/ (function(module, exports, __webpack_require__) {
 
-	var Vue = __webpack_require__(2);
+	const Vue = __webpack_require__(2);
 	__webpack_require__(4);
 	__webpack_require__(6);
 
@@ -60,275 +60,287 @@
 	const lastListChoice = 'lastListChoice';
 
 	window.trelloHandler = new Vue({
-	    el: "#trello",
+	  el: '#trello',
 
-	    data: {
-	        authenticated: false,
-	        boards: null,
-	        selectedBoard: null,
-	        lists: null,
-	        selectedList: null,
-	        cards: null,
-	        loading: false,
-	        trelloUrl: null,
+	  data: {
+	    authenticated: false,
+	    boards: null,
+	    selectedBoard: null,
+	    lists: null,
+	    selectedList: null,
+	    cards: null,
+	    loading: false,
+	    trelloUrl: null,
+	  },
+
+	  methods: {
+	    onBoardChange(event) {
+	      const boardId = event.target.value;
+
+	      this.selectBoard(boardId).then(() => {
+	        window.localStorage.setItem(lastBoardChoice, boardId);
+	      });
 	    },
 
-	    methods: {
-	        onBoardChange: function(event) {
-	            const boardId = event.target.value;
+	    onListChange(event) {
+	      const listId = event.target.value;
 
-	            this.selectBoard(boardId)
-	            .then(() => { localStorage.setItem(lastBoardChoice, boardId) });
+	      this.selectList(listId).then(() => {
+	        window.localStorage.setItem(lastListChoice, listId);
+	      });
+	    },
+
+	    authorize() {
+	      window.Trello.deauthorize(); // Fix this
+	      window.Trello.authorize({
+	        type: 'popup',
+	        name: 'Ticket Dependency Graph',
+	        scope: {
+	          read: 'true',
+	          write: 'false',
 	        },
-
-	        onListChange: function(event) {
-	            const listId = event.target.value;
-
-	            this.selectList(listId)
-	            .then(() => { localStorage.setItem(lastListChoice, listId) });
+	        expiration: 'never',
+	        success: this.authSuccessHandler,
+	        error() {
+	          console.warn('Failed authentication'); // eslint-disable-line no-console
 	        },
+	      });
+	    },
 
-	        authorize: function() {
-	            Trello.deauthorize(); //Fix this
-	            Trello.authorize({
-	              type: 'popup',
-	              name: 'Ticket Dependency Graph',
-	              scope: {
-	                read: 'true',
-	                write: 'false' },
-	              expiration: 'never',
-	              success: this.authSuccessHandler,
-	              error: function() {
-	                  console.warn("Failed authentication")
-	              }
-	            });
-	        },
+	    authSuccessHandler() {
+	      const vm = this;
+	      console.log('Successful authentication'); // eslint-disable-line no-console
+	      this.loading = true;
+	      window.Trello.get('/member/me/boards').then(data => {
+	        vm.boards = data;
+	        vm.loading = false;
 
-	        authSuccessHandler: function() {
-	            var vm = this;
-	            console.log("Successful authentication")
-	            this.loading = true;
-	            Trello.get('/member/me/boards').then(function(data) {
-	                vm.boards = data;
-	                vm.loading = false;
+	        // Thanks to Vue.nextTick, we wait for Vue to update the DOM, for the board dropdown to be filled with
+	        // the list of boards before retrieveLastBoardAndListChoice sets a chosen value in the board dropdown.
+	        Vue.nextTick(vm.retrieveLastBoardAndListChoice);
+	      });
+	    },
 
-	                // Thanks to Vue.nextTick, we wait for Vue to update the DOM, for the board dropdown to be filled with
-	                // the list of boards before retrieveLastBoardAndListChoice sets a chosen value in the board dropdown.
-	                Vue.nextTick(vm.retrieveLastBoardAndListChoice);
-	            })
-	        },
-
-	        refresh: function() {
-	            var vm = this;
-	            this.loading = true;
-	            return Trello.get('/lists/' + this.selectedList +'/cards').then(function(data) {
-	                vm.cards = data;
-	                vm.deleteUselessCards();
-	                vm.addOrUpdateCards();
-	                vm.calculateDependenciesAsPromises().then(function(linkDataArray) {
-	                    window.myDiagram.model.linkDataArray = linkDataArray;
-	                    vm.loading = false;
-	                });
-	            });
-	        },
-
-	        retrieveLastBoardAndListChoice: function() {
-	            const boardChoiceId = localStorage.getItem(lastBoardChoice);
-	            const listChoiceId = localStorage.getItem(lastListChoice);
-
-	            if (!boardChoiceId || !listChoiceId) {
-	                return Promise.resolve();
-	            } else {
-	                return this.selectBoard(boardChoiceId)
-	                .then(() => this.selectList(listChoiceId));
-	            }
-	        },
-
-	        selectBoard: function(boardId) {
-	            this.selectedBoard = boardId;
-
-	            return Promise.all([
-	                Trello.get('/boards/' + boardId + '/lists'),
-	                Trello.get('/boards/' + boardId + '/shortUrl')
-	            ]).then(([lists, trelloUrl]) => {
-	                this.lists = lists;
-	                this.trelloUrl = trelloUrl._value;
-	            });
-	        },
-
-	        selectList: function(listId) {
-	            this.selectedList = listId;
-	            return this.refresh();
-	        },
-
-	        addOrUpdateCards: function() {
-	            for (var i = 0; i < this.cards.length; i++) {
-	                var card = this.cards[i];
-	                window.graphHandler.addOrUpdateTicket(card.idShort, card.name)
-	            }
-	        },
-
-	        deleteUselessCards: function() {
-	            var nodes = window.graphHandler.getNodes();
-	            var toBeRemoved = [];
-	            for (var i = 0; i < nodes.length; i++) {
-	                var node = nodes[i]
-	                if (!this.isTicketIdInList(node.key)) {
-	                    toBeRemoved.push(node.key)
-	                }
-	            }
-	            for (var i = 0; i < toBeRemoved.length; i++) {
-	                window.graphHandler.removeTicket(toBeRemoved[i])
-	            }
-	        },
-
-	        calculateDependenciesAsPromises: function() {
-	            var vm = this;
-	            var linkDataArray = [];
-	            var promises = [];
-	            for (var iCard = 0; iCard < vm.cards.length; iCard++) {
-	                promises.push(
-	                    new Promise(function(resolve, reject) {
-	                        vm.getOrCreateDependencyChecklist(vm.cards[iCard]).then(function(checklist) {
-	                            var ticketIds = vm.getDependentTicketsFromChecklist(checklist);
-	                            for (var j = 0; j < ticketIds.length; j++) {
-	                                linkDataArray.push({
-	                                    from: ticketIds[j].ticketId,
-	                                    to: vm.getTicketIdFromIdCard(checklist.idCard)
-	                                });
-	                            }
-	                            resolve();
-	                        });
-	                    })
-	                );
-	            }
-	            return new Promise(function(resolve, reject) {
-	                Promise.all(promises).then(function() {
-	                    resolve(linkDataArray);
-	                });
-	            });
-	        },
-
-	        getTicketIdFromIdCard: function(idCard) {
-	            if (null == this.cards) {
-	                return null;
-	            }
-	            for (var i = 0; i < this.cards.length; i++) {
-	                if (this.cards[i].id == idCard) {
-	                    return this.cards[i].idShort;
-	                }
-	            }
-	            return null;
-	        },
-
-	        isTicketIdInList: function(ticketId) {
-	            for (var i = 0; i < this.cards.length; i++) {
-	                if (this.cards[i].idShort == ticketId) {
-	                    return true;
-	                }
-	            }
-	            return false;
-	        },
-
-	        addTrelloDependency: function(parentId, childId) {
-	            var childCard  = null;
-	            var parentCard = null;
-	            if (null == this.cards) {
-	                console.warn('Fail adding dependency in Trello');
-	                return false;
-	            }
-	            for (var i = 0; i < this.cards.length; i++) {
-	                if (this.cards[i].idShort == childId) {
-	                    childCard = this.cards[i];
-	                }
-	                if (this.cards[i].idShort == parentId) {
-	                    parentCard = this.cards[i];
-	                }
-	            }
-	            if (null == childCard || null == parentCard) {
-	                console.warn('Fail adding dependency in Trello');
-	                return false;
-	            }
-	            this.getOrCreateDependencyChecklist(childCard).then(function(checklist) {
-	                var checkItem = {
-	                    "name": parentCard.url
-	                }
-	                Trello.post('/checklists/' + checklist.id + '/checkItems', checkItem);
-	            });
-	        },
-
-	        deleteTrelloDependency: function(parentId, childId) {
-	            var vm = this;
-	            var childCard = null;
-	            if (null == this.cards) {
-	                console.warn('Fail deleting dependency in Trello');
-	                return false;
-	            }
-	            for (var i = 0; i < this.cards.length; i++) {
-	                if (this.cards[i].idShort == childId) {
-	                    childCard = this.cards[i];
-	                }
-	            }
-	            if (null == childCard) {
-	                console.warn('Fail deleting dependency in Trello');
-	                return false;
-	            }
-	            this.getOrCreateDependencyChecklist(childCard).then(function(checklist) {
-	                ticketIds = vm.getDependentTicketsFromChecklist(checklist);
-	                for (var i = 0; i < ticketIds.length; i++) {
-	                    if (ticketIds[i].ticketId == parentId) {
-	                        Trello.delete('/checklists/' + checklist.id + '/checkItems/' + ticketIds[i].checkItemId);
-	                        console.log('Dependency deleted');
-	                        return;
-	                    }
-	                }
-
-	            });
-	        },
-
-	        getDependentTicketsFromChecklist: function(checklist) {
-	            var ticketIds = [];
-	            if (null == checklist.checkItems) {
-	                return ticketIds;
-	            }
-	            for (var i = 0; i < checklist.checkItems.length; i++) {
-	                var checkItem = checklist.checkItems[i];
-	                ticketIds.push({
-	                    "checkItemId": checkItem.id,
-	                    "ticketId": this.getTicketIdFromCheckItemName(checkItem.name)
-	                });
-	            }
-	            return ticketIds;
-	        },
-
-	        getTicketIdFromCheckItemName: function(checkItemName) {
-	            if ("#" == checkItemName[0]) {
-	                return checkItemName.split("#")[1];
-	            }
-	            return parseInt(checkItemName.split("/")[5].split("-")[0]);
-	        },
-
-	        getOrCreateDependencyChecklist: function(card) {
-	            return new Promise(function(resolve, reject) {
-	                Trello.get('/cards/' + card.id + '/checklists').then(function(checklists) {
-	                    for (var k = 0; k < checklists.length; k++) {
-	                        if ("Dependencies" == checklists[k].name) {
-	                            return resolve(checklists[k]);
-	                        }
-	                    }
-	                    var checklist = {
-	                        "name": "Dependencies",
-	                        "idCard": card.id,
-	                    }
-	                    Trello.post('/checklists/', checklist).then(function(data) {
-	                        resolve(data);
-	                    });
-	                });
-	            });
+	    refresh() {
+	      const vm = this;
+	      this.loading = true;
+	      return window.Trello.get(`/lists/${this.selectedList}/cards`).then(
+	        data => {
+	          vm.cards = data;
+	          vm.deleteUselessCards();
+	          vm.addOrUpdateCards();
+	          vm.calculateDependenciesAsPromises().then(linkDataArray => {
+	            window.myDiagram.model.linkDataArray = linkDataArray;
+	            vm.loading = false;
+	          });
 	        }
+	      );
+	    },
 
-	    }
-	})
+	    retrieveLastBoardAndListChoice() {
+	      const boardChoiceId = window.localStorage.getItem(lastBoardChoice);
+	      const listChoiceId = window.localStorage.getItem(lastListChoice);
+
+	      if (!boardChoiceId || !listChoiceId) {
+	        return Promise.resolve();
+	      }
+
+	      return this.selectBoard(boardChoiceId).then(() =>
+	        Vue.nextTick(this.selectList(listChoiceId))
+	      );
+	    },
+
+	    selectBoard(boardId) {
+	      this.selectedBoard = boardId;
+
+	      return Promise.all([
+	        window.Trello.get(`/boards/${boardId}/lists`),
+	        window.Trello.get(`/boards/${boardId}/shortUrl`),
+	      ]).then(([lists, trelloUrl]) => {
+	        this.lists = lists;
+	        this.trelloUrl = trelloUrl._value; // eslint-disable-line no-underscore-dangle
+	      });
+	    },
+
+	    selectList(listId) {
+	      this.selectedList = listId;
+	      return this.refresh();
+	    },
+
+	    addOrUpdateCards() {
+	      for (let i = 0; i < this.cards.length; i += 1) {
+	        const card = this.cards[i];
+	        window.graphHandler.addOrUpdateTicket(card.idShort, card.name);
+	      }
+	    },
+
+	    deleteUselessCards() {
+	      const nodes = window.graphHandler.getNodes();
+	      const toBeRemoved = [];
+	      for (let i = 0; i < nodes.length; i += 1) {
+	        const node = nodes[i];
+	        if (!this.isTicketIdInList(node.key)) {
+	          toBeRemoved.push(node.key);
+	        }
+	      }
+	      for (let i = 0; i < toBeRemoved.length; i += 1) {
+	        window.graphHandler.removeTicket(toBeRemoved[i]);
+	      }
+	    },
+
+	    calculateDependenciesAsPromises() {
+	      const vm = this;
+	      const linkDataArray = [];
+	      const promises = [];
+	      for (let iCard = 0; iCard < vm.cards.length; iCard += 1) {
+	        promises.push(
+	          new Promise(resolve => {
+	            vm.getOrCreateDependencyChecklist(vm.cards[iCard]).then(
+	              checklist => {
+	                const ticketIds = vm.getDependentTicketsFromChecklist(
+	                  checklist
+	                );
+	                for (let j = 0; j < ticketIds.length; j += 1) {
+	                  linkDataArray.push({
+	                    from: ticketIds[j].ticketId,
+	                    to: vm.getTicketIdFromIdCard(checklist.idCard),
+	                  });
+	                }
+	                resolve();
+	              }
+	            );
+	          })
+	        );
+	      }
+	      return new Promise(resolve => {
+	        Promise.all(promises).then(() => {
+	          resolve(linkDataArray);
+	        });
+	      });
+	    },
+
+	    getTicketIdFromIdCard(idCard) {
+	      if (this.cards == null) {
+	        return null;
+	      }
+	      for (let i = 0; i < this.cards.length; i += 1) {
+	        if (this.cards[i].id === idCard) {
+	          return this.cards[i].idShort;
+	        }
+	      }
+	      return null;
+	    },
+
+	    isTicketIdInList(ticketId) {
+	      for (let i = 0; i < this.cards.length; i += 1) {
+	        if (this.cards[i].idShort === ticketId) {
+	          return true;
+	        }
+	      }
+	      return false;
+	    },
+
+	    addTrelloDependency(parentId, childId) {
+	      let childCard = null;
+	      let parentCard = null;
+	      if (this.cards == null) {
+	        console.warn('Fail adding dependency in Trello'); // eslint-disable-line no-console
+	        return false;
+	      }
+	      for (let i = 0; i < this.cards.length; i += 1) {
+	        if (this.cards[i].idShort === childId) {
+	          childCard = this.cards[i];
+	        }
+	        if (this.cards[i].idShort === parentId) {
+	          parentCard = this.cards[i];
+	        }
+	      }
+	      if (childCard == null || parentCard == null) {
+	        console.warn('Fail adding dependency in Trello'); // eslint-disable-line no-console
+	        return false;
+	      }
+	      return this.getOrCreateDependencyChecklist(childCard).then(checklist => {
+	        const checkItem = {
+	          name: parentCard.url,
+	        };
+	        window.Trello.post(`/checklists/${checklist.id}/checkItems`, checkItem);
+	      });
+	    },
+
+	    deleteTrelloDependency(parentId, childId) {
+	      const vm = this;
+	      let childCard = null;
+	      if (this.cards == null) {
+	        console.warn('Fail deleting dependency in Trello'); // eslint-disable-line no-console
+	        return false;
+	      }
+	      for (let i = 0; i < this.cards.length; i += 1) {
+	        if (this.cards[i].idShort === childId) {
+	          childCard = this.cards[i];
+	        }
+	      }
+	      if (childCard == null) {
+	        console.warn('Fail deleting dependency in Trello'); // eslint-disable-line no-console
+	        return false;
+	      }
+	      return this.getOrCreateDependencyChecklist(childCard).then(checklist => {
+	        const ticketIds = vm.getDependentTicketsFromChecklist(checklist);
+	        for (let i = 0; i < ticketIds.length; i += 1) {
+	          if (ticketIds[i].ticketId === parentId) {
+	            window.Trello.delete(
+	              `/checklists/${checklist.id}/checkItems/${
+	                ticketIds[i].checkItemId
+	              }`
+	            );
+	            console.log('Dependency deleted'); // eslint-disable-line no-console
+	            return;
+	          }
+	        }
+	      });
+	    },
+
+	    getDependentTicketsFromChecklist(checklist) {
+	      const ticketIds = [];
+	      if (checklist.checkItems == null) {
+	        return ticketIds;
+	      }
+	      for (let i = 0; i < checklist.checkItems.length; i += 1) {
+	        const checkItem = checklist.checkItems[i];
+	        ticketIds.push({
+	          checkItemId: checkItem.id,
+	          ticketId: this.getTicketIdFromCheckItemName(checkItem.name),
+	        });
+	      }
+	      return ticketIds;
+	    },
+
+	    getTicketIdFromCheckItemName(checkItemName) {
+	      if (checkItemName[0] === '#') {
+	        return checkItemName.split('#')[1];
+	      }
+	      return parseInt(checkItemName.split('/')[5].split('-')[0], 10);
+	    },
+
+	    getOrCreateDependencyChecklist(card) {
+	      return new Promise(resolve => {
+	        window.Trello.get(`/cards/${card.id}/checklists`).then(checklists => {
+	          for (let k = 0; k < checklists.length; k += 1) {
+	            if (checklists[k].name === 'Dependencies') {
+	              return resolve(checklists[k]);
+	            }
+	          }
+	          const checklist = {
+	            name: 'Dependencies',
+	            idCard: card.id,
+	          };
+	          return window.Trello.post('/checklists/', checklist).then(data => {
+	            resolve(data);
+	          });
+	        });
+	      });
+	    },
+	  },
+	});
 
 
 /***/ }),
@@ -10770,16 +10782,57 @@
 /***/ (function(module, exports, __webpack_require__) {
 
 	var jQuery = __webpack_require__(5);
-	var opts={"version":1,"apiEndpoint":"https://api.trello.com","authEndpoint":"https://trello.com","intentEndpoint":"https://trello.com","key":"9685b92ee42080b94102b49fe50d2bb1"};
+	var opts = {
+	  version: 1,
+	  apiEndpoint: 'https://api.trello.com',
+	  authEndpoint: 'https://trello.com',
+	  intentEndpoint: 'https://trello.com',
+	  key: '9685b92ee42080b94102b49fe50d2bb1',
+	};
 
-	var deferred, isFunction, isReady, ready, waitUntil, wrapper,
+	var deferred,
+	  isFunction,
+	  isReady,
+	  ready,
+	  waitUntil,
+	  wrapper,
 	  slice = [].slice;
 
 	wrapper = function(window, jQuery, opts) {
-	  var $, Trello, apiEndpoint, authEndpoint, authorizeURL, baseURL, collection, fn, fn1, i, intentEndpoint, j, key, len, len1, localStorage, location, parseRestArgs, readStorage, ref, ref1, storagePrefix, token, type, version, writeStorage;
+	  var $,
+	    Trello,
+	    apiEndpoint,
+	    authEndpoint,
+	    authorizeURL,
+	    baseURL,
+	    collection,
+	    fn,
+	    fn1,
+	    i,
+	    intentEndpoint,
+	    j,
+	    key,
+	    len,
+	    len1,
+	    localStorage,
+	    location,
+	    parseRestArgs,
+	    readStorage,
+	    ref,
+	    ref1,
+	    storagePrefix,
+	    token,
+	    type,
+	    version,
+	    writeStorage;
 	  $ = jQuery;
-	  key = opts.key, token = opts.token, apiEndpoint = opts.apiEndpoint, authEndpoint = opts.authEndpoint, intentEndpoint = opts.intentEndpoint, version = opts.version;
-	  baseURL = apiEndpoint + "/" + version + "/";
+	  (key = opts.key),
+	    (token = opts.token),
+	    (apiEndpoint = opts.apiEndpoint),
+	    (authEndpoint = opts.authEndpoint),
+	    (intentEndpoint = opts.intentEndpoint),
+	    (version = opts.version);
+	  baseURL = apiEndpoint + '/' + version + '/';
 	  location = window.location;
 	  Trello = {
 	    version: function() {
@@ -10799,22 +10852,27 @@
 	    },
 	    rest: function() {
 	      var args, error, method, params, path, ref, success;
-	      method = arguments[0], args = 2 <= arguments.length ? slice.call(arguments, 1) : [];
-	      ref = parseRestArgs(args), path = ref[0], params = ref[1], success = ref[2], error = ref[3];
+	      (method = arguments[0]),
+	        (args = 2 <= arguments.length ? slice.call(arguments, 1) : []);
+	      (ref = parseRestArgs(args)),
+	        (path = ref[0]),
+	        (params = ref[1]),
+	        (success = ref[2]),
+	        (error = ref[3]);
 	      opts = {
-	        url: "" + baseURL + path,
+	        url: '' + baseURL + path,
 	        type: method,
 	        data: {},
-	        dataType: "json",
+	        dataType: 'json',
 	        success: success,
-	        error: error
+	        error: error,
 	      };
 	      if (!$.support.cors) {
-	        opts.dataType = "jsonp";
-	        if (method !== "GET") {
-	          opts.type = "GET";
+	        opts.dataType = 'jsonp';
+	        if (method !== 'GET') {
+	          opts.type = 'GET';
 	          $.extend(opts.data, {
-	            _method: method
+	            _method: method,
 	          });
 	        }
 	      }
@@ -10834,44 +10892,49 @@
 	    },
 	    deauthorize: function() {
 	      token = null;
-	      writeStorage("token", token);
+	      writeStorage('token', token);
 	    },
 	    authorize: function(userOpts) {
 	      var k, persistToken, ref, regexToken, scope, v;
-	      opts = $.extend(true, {
-	        type: "redirect",
-	        persist: true,
-	        interactive: true,
-	        scope: {
-	          read: true,
-	          write: false,
-	          account: false
+	      opts = $.extend(
+	        true,
+	        {
+	          type: 'redirect',
+	          persist: true,
+	          interactive: true,
+	          scope: {
+	            read: true,
+	            write: false,
+	            account: false,
+	          },
+	          expiration: '30days',
 	        },
-	        expiration: "30days"
-	      }, userOpts);
+	        userOpts
+	      );
 	      regexToken = /[&#]?token=([0-9a-f]{64})/;
 	      persistToken = function() {
-	        if (opts.persist && (token != null)) {
-	          return writeStorage("token", token);
+	        if (opts.persist && token != null) {
+	          return writeStorage('token', token);
 	        }
 	      };
 	      if (opts.persist) {
 	        if (token == null) {
-	          token = readStorage("token");
+	          token = readStorage('token');
 	        }
 	      }
 	      if (token == null) {
-	        token = (ref = regexToken.exec(location.hash)) != null ? ref[1] : void 0;
+	        token =
+	          (ref = regexToken.exec(location.hash)) != null ? ref[1] : void 0;
 	      }
 	      if (this.authorized()) {
 	        persistToken();
-	        location.hash = location.hash.replace(regexToken, "");
-	        return typeof opts.success === "function" ? opts.success() : void 0;
+	        location.hash = location.hash.replace(regexToken, '');
+	        return typeof opts.success === 'function' ? opts.success() : void 0;
 	      }
 	      if (!opts.interactive) {
-	        return typeof opts.error === "function" ? opts.error() : void 0;
+	        return typeof opts.error === 'function' ? opts.error() : void 0;
 	      }
-	      scope = ((function() {
+	      scope = (function() {
 	        var ref1, results;
 	        ref1 = opts.scope;
 	        results = [];
@@ -10882,61 +10945,94 @@
 	          }
 	        }
 	        return results;
-	      })()).join(",");
+	      })().join(',');
 	      switch (opts.type) {
-	        case "popup":
+	        case 'popup':
 	          (function() {
-	            var authWindow, height, left, origin, receiveMessage, ref1, top, width;
-	            waitUntil("authorized", (function(_this) {
-	              return function(isAuthorized) {
-	                if (isAuthorized) {
-	                  persistToken();
-	                  return typeof opts.success === "function" ? opts.success() : void 0;
-	                } else {
-	                  return typeof opts.error === "function" ? opts.error() : void 0;
-	                }
-	              };
-	            })(this));
+	            var authWindow,
+	              height,
+	              left,
+	              origin,
+	              receiveMessage,
+	              ref1,
+	              top,
+	              width;
+	            waitUntil(
+	              'authorized',
+	              (function(_this) {
+	                return function(isAuthorized) {
+	                  if (isAuthorized) {
+	                    persistToken();
+	                    return typeof opts.success === 'function'
+	                      ? opts.success()
+	                      : void 0;
+	                  } else {
+	                    return typeof opts.error === 'function'
+	                      ? opts.error()
+	                      : void 0;
+	                  }
+	                };
+	              })(this)
+	            );
 	            width = 420;
 	            height = 470;
 	            left = window.screenX + (window.innerWidth - width) / 2;
 	            top = window.screenY + (window.innerHeight - height) / 2;
-	            origin = (ref1 = /^[a-z]+:\/\/[^\/]*/.exec(location)) != null ? ref1[0] : void 0;
-	            authWindow = window.open(authorizeURL({
-	              return_url: origin,
-	              callback_method: "postMessage",
-	              scope: scope,
-	              expiration: opts.expiration,
-	              name: opts.name
-	            }), "trello", "width=" + width + ",height=" + height + ",left=" + left + ",top=" + top);
+	            origin =
+	              (ref1 = /^[a-z]+:\/\/[^\/]*/.exec(location)) != null
+	                ? ref1[0]
+	                : void 0;
+	            authWindow = window.open(
+	              authorizeURL({
+	                return_url: origin,
+	                callback_method: 'postMessage',
+	                scope: scope,
+	                expiration: opts.expiration,
+	                name: opts.name,
+	              }),
+	              'trello',
+	              'width=' +
+	                width +
+	                ',height=' +
+	                height +
+	                ',left=' +
+	                left +
+	                ',top=' +
+	                top
+	            );
 	            receiveMessage = function(event) {
 	              var ref2;
-	              if (event.origin !== authEndpoint || event.source !== authWindow) {
+	              if (
+	                event.origin !== authEndpoint ||
+	                event.source !== authWindow
+	              ) {
 	                return;
 	              }
 	              if ((ref2 = event.source) != null) {
 	                ref2.close();
 	              }
-	              if ((event.data != null) && /[0-9a-f]{64}/.test(event.data)) {
+	              if (event.data != null && /[0-9a-f]{64}/.test(event.data)) {
 	                token = event.data;
 	              } else {
 	                token = null;
 	              }
-	              if (typeof window.removeEventListener === "function") {
-	                window.removeEventListener("message", receiveMessage, false);
+	              if (typeof window.removeEventListener === 'function') {
+	                window.removeEventListener('message', receiveMessage, false);
 	              }
-	              isReady("authorized", Trello.authorized());
+	              isReady('authorized', Trello.authorized());
 	            };
-	            return typeof window.addEventListener === "function" ? window.addEventListener("message", receiveMessage, false) : void 0;
+	            return typeof window.addEventListener === 'function'
+	              ? window.addEventListener('message', receiveMessage, false)
+	              : void 0;
 	          })();
 	          break;
 	        default:
 	          window.location = authorizeURL({
 	            redirect_uri: location.href,
-	            callback_method: "fragment",
+	            callback_method: 'fragment',
 	            scope: scope,
 	            expiration: opts.expiration,
-	            name: opts.name
+	            name: opts.name,
 	          });
 	      }
 	    },
@@ -10944,7 +11040,7 @@
 	      var baseArgs, getCard;
 	      baseArgs = {
 	        mode: 'popup',
-	        source: key || window.location.host
+	        source: key || window.location.host,
 	      };
 	      getCard = function(callback) {
 	        var height, left, returnUrl, top, width;
@@ -10960,14 +11056,25 @@
 	            }
 	          } catch (_error) {}
 	        };
-	        if (typeof window.addEventListener === "function") {
+	        if (typeof window.addEventListener === 'function') {
 	          window.addEventListener('message', returnUrl, false);
 	        }
 	        width = 500;
 	        height = 600;
 	        left = window.screenX + (window.outerWidth - width) / 2;
 	        top = window.screenY + (window.outerHeight - height) / 2;
-	        return window.open(intentEndpoint + "/add-card?" + $.param($.extend(baseArgs, options)), "trello", "width=" + width + ",height=" + height + ",left=" + left + ",top=" + top);
+	        return window.open(
+	          intentEndpoint + '/add-card?' + $.param($.extend(baseArgs, options)),
+	          'trello',
+	          'width=' +
+	            width +
+	            ',height=' +
+	            height +
+	            ',left=' +
+	            left +
+	            ',top=' +
+	            top
+	        );
 	      };
 	      if (next != null) {
 	        return getCard(next);
@@ -10984,26 +11091,35 @@
 	      } else {
 	        return getCard(function() {});
 	      }
-	    }
+	    },
 	  };
-	  ref = ["GET", "PUT", "POST", "DELETE"];
+	  ref = ['GET', 'PUT', 'POST', 'DELETE'];
 	  fn = function(type) {
-	    return Trello[type.toLowerCase()] = function() {
+	    return (Trello[type.toLowerCase()] = function() {
 	      return this.rest.apply(this, [type].concat(slice.call(arguments)));
-	    };
+	    });
 	  };
 	  for (i = 0, len = ref.length; i < len; i++) {
 	    type = ref[i];
 	    fn(type);
 	  }
-	  Trello.del = Trello["delete"];
-	  ref1 = ["actions", "cards", "checklists", "boards", "lists", "members", "organizations", "lists"];
+	  Trello.del = Trello['delete'];
+	  ref1 = [
+	    'actions',
+	    'cards',
+	    'checklists',
+	    'boards',
+	    'lists',
+	    'members',
+	    'organizations',
+	    'lists',
+	  ];
 	  fn1 = function(collection) {
-	    return Trello[collection] = {
+	    return (Trello[collection] = {
 	      get: function(id, params, success, error) {
-	        return Trello.get(collection + "/" + id, params, success, error);
-	      }
-	    };
+	        return Trello.get(collection + '/' + id, params, success, error);
+	      },
+	    });
 	  };
 	  for (j = 0, len1 = ref1.length; j < len1; j++) {
 	    collection = ref1[j];
@@ -11013,25 +11129,31 @@
 	  authorizeURL = function(args) {
 	    var baseArgs;
 	    baseArgs = {
-	      response_type: "token",
-	      key: key
+	      response_type: 'token',
+	      key: key,
 	    };
-	    return authEndpoint + "/" + version + "/authorize?" + $.param($.extend(baseArgs, args));
+	    return (
+	      authEndpoint +
+	      '/' +
+	      version +
+	      '/authorize?' +
+	      $.param($.extend(baseArgs, args))
+	    );
 	  };
 	  parseRestArgs = function(arg) {
 	    var error, params, path, success;
-	    path = arg[0], params = arg[1], success = arg[2], error = arg[3];
+	    (path = arg[0]), (params = arg[1]), (success = arg[2]), (error = arg[3]);
 	    if (isFunction(params)) {
 	      error = success;
 	      success = params;
 	      params = {};
 	    }
-	    path = path.replace(/^\/*/, "");
+	    path = path.replace(/^\/*/, '');
 	    return [path, params, success, error];
 	  };
 	  localStorage = window.localStorage;
 	  if (localStorage != null) {
-	    storagePrefix = "trello_";
+	    storagePrefix = 'trello_';
 	    readStorage = function(key) {
 	      return localStorage[storagePrefix + key];
 	    };
@@ -11039,7 +11161,7 @@
 	      if (value === null) {
 	        return delete localStorage[storagePrefix + key];
 	      } else {
-	        return localStorage[storagePrefix + key] = value;
+	        return (localStorage[storagePrefix + key] = value);
 	      }
 	    };
 	  } else {
@@ -11055,7 +11177,10 @@
 	  if (ready[name] != null) {
 	    return fx(ready[name]);
 	  } else {
-	    return (deferred[name] != null ? deferred[name] : deferred[name] = []).push(fx);
+	    return (deferred[name] != null
+	      ? deferred[name]
+	      : (deferred[name] = [])
+	    ).push(fx);
 	  }
 	};
 
@@ -11073,7 +11198,7 @@
 	};
 
 	isFunction = function(val) {
-	  return typeof val === "function";
+	  return typeof val === 'function';
 	};
 
 	wrapper(window, jQuery, opts);
@@ -21453,178 +21578,232 @@
 /* 6 */
 /***/ (function(module, exports, __webpack_require__) {
 
-	__webpack_require__(7)
-	var Vue = __webpack_require__(2);
-	var getComplexityFromName = function(name) {
-	    var matches = name.match(/^\((\d+[\.,]?\d*)\).+$/);
-	    if (!matches) return null;
-	    return matches[1];
-	}
+	const Vue = __webpack_require__(2);
+	__webpack_require__(7);
 
-	var getNameWithoutComplexity = function(name) {
-	    var matchedComplexity = getComplexityFromName(name);
-	    if (matchedComplexity) {
-	      return name.replace('(' + matchedComplexity + ')', '');
-	    }
-	    return name;
-	}
+	const getComplexityFromName = name => {
+	  const matches = name.match(/^\((\d+[.,]?\d*)\).+$/);
+	  if (!matches) return null;
+	  return matches[1];
+	};
+
+	const getNameWithoutComplexity = name => {
+	  const matchedComplexity = getComplexityFromName(name);
+	  if (matchedComplexity) {
+	    return name.replace(`(${matchedComplexity})`, '');
+	  }
+	  return name;
+	};
 
 	window.graphHandler = new Vue({
-	    el: '#graphHandler',
+	  el: '#graphHandler',
 
-	    data: {
-	        currentParent: '',
-	        currentChild: '',
-	        newTicketId: '',
-	        newTicketName: '',
-	        dataAsJson: ''
+	  data: {
+	    currentParent: '',
+	    currentChild: '',
+	    newTicketId: '',
+	    newTicketName: '',
+	    dataAsJson: '',
+	  },
+
+	  methods: {
+	    addDependency(parent, child) {
+	      this.addGraphDependency(parent, child);
+	      window.trelloHandler.addTrelloDependency(parent, child);
 	    },
 
-	    methods: {
-	        addDependency: function(parent, child) {
-	            this.addGraphDependency(parent, child);
-	            window.trelloHandler.addTrelloDependency(parent, child);
-	        },
+	    addGraphDependency(parent, child) {
+	      window.myDiagram.startTransaction('Add dependency');
+	      window.myDiagram.model.addLinkData({
+	        from: parseInt(parent, 10),
+	        to: parseInt(child, 10),
+	      });
+	      window.myDiagram.commitTransaction('Add dependency');
 
-	        addGraphDependency: function(parent, child) {
-	            window.myDiagram.startTransaction("Add dependency");
-	            window.myDiagram.model.addLinkData({
-	                from: parseInt(parent),
-	                to: parseInt(child)
-	            })
-	            window.myDiagram.commitTransaction("Add dependency");
+	      this.currentChild = '';
+	      this.currentParent = '';
+	    },
 
-	            this.currentChild = '';
-	            this.currentParent = '';
-	        },
+	    addOrUpdateTicket(ticketId, ticketName) {
+	      const currentNode = window.myDiagram.model.findNodeDataForKey(ticketId);
+	      if (currentNode == null) {
+	        window.myDiagram.startTransaction('Add ticket');
+	        const newTicket = {
+	          key: ticketId,
+	          name: getNameWithoutComplexity(ticketName),
+	          complexity: getComplexityFromName(ticketName),
+	        };
+	        window.myDiagram.model.addNodeData(newTicket);
+	        window.myDiagram.commitTransaction('Add ticket');
+	      } else {
+	        window.myDiagram.startTransaction('Update ticket');
+	        window.myDiagram.model.setDataProperty(
+	          currentNode,
+	          'name',
+	          getNameWithoutComplexity(ticketName)
+	        );
+	        window.myDiagram.model.setDataProperty(
+	          currentNode,
+	          'complexity',
+	          getComplexityFromName(ticketName)
+	        );
+	        window.myDiagram.commitTransaction('Update ticket');
+	      }
+	    },
 
-	        addOrUpdateTicket: function(ticketId, ticketName) {
-	            currentNode = window.myDiagram.model.findNodeDataForKey(ticketId)
-	            if (null == currentNode) {
-	                window.myDiagram.startTransaction("Add ticket");
-	                var newTicket = { key: ticketId,
-	                                  name: getNameWithoutComplexity(ticketName),
-	                                  complexity: getComplexityFromName(ticketName)};
-	                window.myDiagram.model.addNodeData(newTicket);
-	                window.myDiagram.commitTransaction("Add ticket");
-	            } else {
-	                window.myDiagram.startTransaction("Update ticket");
-	                window.myDiagram.model.setDataProperty(currentNode, "name", getNameWithoutComplexity(ticketName));
-	                window.myDiagram.model.setDataProperty(currentNode, "complexity", getComplexityFromName(ticketName));
-	                window.myDiagram.commitTransaction("Update ticket");
-	            }
-	        },
+	    removeTicket(ticketId) {
+	      const currentNode = window.myDiagram.findNodeForKey(ticketId);
+	      if (currentNode != null) {
+	        window.myDiagram.startTransaction('Remove ticket');
+	        window.myDiagram.remove(currentNode);
+	        window.myDiagram.commitTransaction('Remove ticket');
+	      }
+	    },
 
-	        removeTicket: function(ticketId) {
-	            currentNode = window.myDiagram.findNodeForKey(ticketId)
-	            if (null != currentNode) {
-	                window.myDiagram.startTransaction("Remove ticket");
-	                window.myDiagram.remove(currentNode)
-	                window.myDiagram.commitTransaction("Remove ticket");
-	            }
-	        },
+	    getNodes() {
+	      return window.myDiagram.model.nodeDataArray;
+	    },
 
-	        getNodes: function() {
-	            return window.myDiagram.model.nodeDataArray;
-	        },
+	    saveData() {
+	      this.dataAsJson = window.myDiagram.model.toJson();
+	    },
 
-	        saveData: function() {
-	            this.dataAsJson = window.myDiagram.model.toJson();
-	        },
-
-	        loadData: function() {
-	            window.myDiagram.model = go.Model.fromJson(this.dataAsJson);
-	        }
-	    }
-	})
+	    loadData() {
+	      window.myDiagram.model = window.go.Model.fromJson(this.dataAsJson);
+	    },
+	  },
+	});
 
 
 /***/ }),
 /* 7 */
 /***/ (function(module, exports, __webpack_require__) {
 
-	var go = __webpack_require__(8);
-	var GO = go.GraphObject.make;
+	const go = __webpack_require__(8);
 
-	window.myDiagram = GO(go.Diagram, "dependencyGraph", {
-	    initialContentAlignment: go.Spot.Center,
-	    "undoManager.isEnabled": true,
-	    allowCopy: false,
-	    autoScale: go.Diagram.Uniform,
-	    layout: GO(go.LayeredDigraphLayout, { angle: 90, layerSpacing: 10 })
+	const GO = go.GraphObject.make;
+
+	window.myDiagram = GO(go.Diagram, 'dependencyGraph', {
+	  initialContentAlignment: go.Spot.Center,
+	  'undoManager.isEnabled': true,
+	  allowCopy: false,
+	  autoScale: go.Diagram.Uniform,
+	  layout: GO(go.LayeredDigraphLayout, { angle: 90, layerSpacing: 10 }),
 	});
 
 	window.myDiagram.nodeTemplate = GO(
-	    go.Node,
-	    "Auto",
-	    { isShadowed: true, shadowColor: "#C5C1AA", layoutConditions: go.Part.LayoutAdded },
-	    {
-	        mouseDrop: function (e, node) {
-	            var diagram = node.diagram;
-	            var selnode = diagram.selection.first();  // assume just one Node in selection
-	            if (selnode instanceof go.Node) {
-	                window.graphHandler.addDependency(node.data.key, selnode.data.key);
-	                selnode.data.hasJustBeenLinked = true;
-	                node.isLayoutPositioned = true;
-	            }
-	        }
+	  go.Node,
+	  'Auto',
+	  {
+	    isShadowed: true,
+	    shadowColor: '#C5C1AA',
+	    layoutConditions: go.Part.LayoutAdded,
+	  },
+	  {
+	    mouseDrop(e, node) {
+	      const { diagram } = node;
+	      const selnode = diagram.selection.first(); // assume just one Node in selection
+	      if (selnode instanceof go.Node) {
+	        window.graphHandler.addDependency(node.data.key, selnode.data.key);
+	        selnode.data.hasJustBeenLinked = true;
+	        // eslint-disable-next-line no-param-reassign
+	        node.isLayoutPositioned = true;
+	      }
 	    },
-	    GO(go.Shape, "RoundedRectangle", { strokeWidth: 1, fill: "white"}),
-	    GO(go.Panel, "Horizontal",
-	        GO(go.TextBlock, { margin: 12, font: "bold 20px sans-serif" },
-	        new go.Binding("text", "key")),
-	        GO(go.TextBlock, { margin: 12, stroke: "#64AD35", font: "bold 14px sans-serif" },
-	        new go.Binding("text", "complexity")),
-	        GO(go.TextBlock, { margin: 8, font: "bold 10px sans-serif",  width: 100, wrap: go.TextBlock.WrapFit },
-	        new go.Binding("text", "name"))
+	  },
+	  GO(go.Shape, 'RoundedRectangle', { strokeWidth: 1, fill: 'white' }),
+	  GO(
+	    go.Panel,
+	    'Horizontal',
+	    GO(
+	      go.TextBlock,
+	      { margin: 12, font: 'bold 20px sans-serif' },
+	      new go.Binding('text', 'key')
+	    ),
+	    GO(
+	      go.TextBlock,
+	      { margin: 12, stroke: '#64AD35', font: 'bold 14px sans-serif' },
+	      new go.Binding('text', 'complexity')
+	    ),
+	    GO(
+	      go.TextBlock,
+	      {
+	        margin: 8,
+	        font: 'bold 10px sans-serif',
+	        width: 100,
+	        wrap: go.TextBlock.WrapFit,
+	      },
+	      new go.Binding('text', 'name')
 	    )
+	  )
 	);
 
-	//To be populated with Trello
-	var myModel = GO(go.GraphLinksModel);
+	// To be populated with Trello
+	const myModel = GO(go.GraphLinksModel);
 	myModel.nodeDataArray = [
-	    { key: 1 , complexity: 13, name: "Connect to Trello to use the TDG"},
-	    { key: 2 , complexity: 5, name: "Choose a board, a list, and you're good to go!"},
-	    { key: 3 , complexity: 8, name: "You can add a link between two tickets given their id using the form below"},
-	    { key: 4 , complexity: 1, name: "Or you can use Drag&Drop: simply drag a ticket over a ticket it depends on"},
-	    { key: 5 , complexity: 0.5, name: "To delete a link, select it with your mouse and press the Delete key"},
-	    { key: 6 , complexity: null, name: "Dependencies will be stored on your Trello board!"},
-	    { key: 7 , complexity: null, name: "Enjoy!"},
+	  { key: 1, complexity: 13, name: 'Connect to Trello to use the TDG' },
+	  {
+	    key: 2,
+	    complexity: 5,
+	    name: "Choose a board, a list, and you're good to go!",
+	  },
+	  {
+	    key: 3,
+	    complexity: 8,
+	    name:
+	      'You can add a link between two tickets given their id using the form below',
+	  },
+	  {
+	    key: 4,
+	    complexity: 1,
+	    name:
+	      'Or you can use Drag&Drop: simply drag a ticket over a ticket it depends on',
+	  },
+	  {
+	    key: 5,
+	    complexity: 0.5,
+	    name:
+	      'To delete a link, select it with your mouse and press the Delete key',
+	  },
+	  {
+	    key: 6,
+	    complexity: null,
+	    name: 'Dependencies will be stored on your Trello board!',
+	  },
+	  { key: 7, complexity: null, name: 'Enjoy!' },
 	];
 
-	myModel.linkDataArray =
-	[
-	    { from: 1, to: 2 },
-	    { from: 2, to: 3 },
-	    { from: 2, to: 4 },
-	    { from: 3, to: 5 },
-	    { from: 4, to: 5 }
+	myModel.linkDataArray = [
+	  { from: 1, to: 2 },
+	  { from: 2, to: 3 },
+	  { from: 2, to: 4 },
+	  { from: 3, to: 5 },
+	  { from: 4, to: 5 },
 	];
 
-	window.myDiagram.linkTemplate =
-	  GO(go.Link,
-	    GO(go.Shape, { strokeWidth: 5, stroke: "#555" }));
+	window.myDiagram.linkTemplate = GO(
+	  go.Link,
+	  GO(go.Shape, { strokeWidth: 5, stroke: '#555' })
+	);
 
-	myDiagram.addDiagramListener("SelectionDeleting", function(e) {
-	  var part = e.subject.first(); // e.subject is the myDiagram.selection collection,
-	                               // so we'll get the first since we know we only have one selection
+	window.myDiagram.addDiagramListener('SelectionDeleting', e => {
+	  const part = e.subject.first(); // e.subject is the myDiagram.selection collection,
+	  // so we'll get the first since we know we only have one selection
 	  if (part instanceof go.Link) {
-	    var childId = part.toNode.data.key;
-	    var parentId = part.fromNode.data.key;
+	    const childId = part.toNode.data.key;
+	    const parentId = part.fromNode.data.key;
 	    window.trelloHandler.deleteTrelloDependency(parentId, childId);
 	  }
 	});
 
-	myDiagram.addDiagramListener("SelectionMoved", function(e) {
-	  e.subject.each(function(part) {
+	window.myDiagram.addDiagramListener('SelectionMoved', e => {
+	  e.subject.each(part => {
 	    if (part.data.hasJustBeenLinked) {
-	      part.data.hasJustBeenLinked = false;
-	      part.isLayoutPositioned = true;
-	    }
-	    else part.isLayoutPositioned = false;
+	      part.data.hasJustBeenLinked = false; // eslint-disable-line no-param-reassign
+	      part.isLayoutPositioned = true; // eslint-disable-line no-param-reassign
+	    } else part.isLayoutPositioned = false; // eslint-disable-line no-param-reassign
 	  });
 	});
-
 
 	window.myDiagram.model = myModel;
 
